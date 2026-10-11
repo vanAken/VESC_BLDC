@@ -43,7 +43,8 @@ static const luna_profil_t luna_profile[] = {
 	{"(Ende)", {0}, false, false, false, 11, false, false, 0.0f, 0.0f},
 };
 static const luna_profil_t luna_profil_standard =
-	{"Standard (unbekannte UUID)", {0}, false, false, false, 11, false, false, 0.0f, 0.0f};
+	{"Standard (unbekannte UUID)", {0}, false, false, true, 11, false, false, 0.0f, 0.0f};
+// (12.10.2026) Bremse an ADC1 wie im Plan und README; PC10 bleibt frei.
 
 // PC10 weder Bremse noch Licht noch Display-Senden -> stilllegen (weisses Rad)
 bool luna_pc10_unbenutzt(void) {

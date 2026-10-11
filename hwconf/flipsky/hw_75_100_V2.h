@@ -66,8 +66,9 @@
 // Chip, Platinenbeschriftung, stancecokes Plan und sein Code-Kommentar
 // benennen PC10/PC11 jeweils anders - daraus kam wochenlange Verwirrung.
 // Gemessen, gleich am Rad (XXXXXX) und am Pruefstand (YYYYYY):
-//   PC10 = Bremse (TX2), Eingang mit Pull-up, Hebel zieht auf 0 V
-//   PC11 = Licht  (RX2), Ausgang 3,3 V
+//   PC10 = Aufdruck RX2 (aussen), frueher Bremse, heute frei (Bremslicht geplant)
+//   PC11 = Aufdruck TX2 (neben GND), Licht, Ausgang 3,3 V
+//   (Aufdruck korrigiert 12.10.2026 nach Messung; Bremse jetzt an ADC1)
 //   Referenz ist das weisse Rad (XXXXXX), gemessen 03.10.2026 nach Funktion:
 //     Bremse ORANGE, Licht GRUEN.
 //   Testcontroller YYYYYY: Farben unbekannt, vor Gebrauch nach Funktion messen.
@@ -115,7 +116,7 @@
 
 // (volker, 07.10.2026) VERDRAHTUNG JE CONTROLLER, gewaehlt ueber die UUID.
 // Eine Firmware fuer alle Controller eines Rads; Tabelle in hw_75_100_V2.c.
-// Unbekannte UUID -> Standardbelegung (Werk): Display PB10/PB11, Bremse PC10,
+// Unbekannte UUID -> Standardbelegung (Werk): Display PB10/PB11, Bremse ADC1,
 // Licht PC11.
 #ifndef __ASSEMBLER__
 #include <stdbool.h>
