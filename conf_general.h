@@ -226,6 +226,7 @@ bool conf_general_store_eeprom_var_custom(eeprom_var *v, int address);
 void conf_general_read_app_configuration(app_configuration *conf);
 bool conf_general_store_app_configuration(app_configuration *conf);
 void conf_general_read_mc_configuration(mc_configuration *conf, bool is_motor_2);
+extern volatile bool conf_general_mcconf_gespeichert;
 bool conf_general_store_mc_configuration(mc_configuration *conf, bool is_motor_2);
 bool conf_general_detect_motor_param(float current, float min_rpm, float low_duty,
 									 float *int_limit, float *bemf_coupling_k, int8_t *hall_table, int *hall_res);

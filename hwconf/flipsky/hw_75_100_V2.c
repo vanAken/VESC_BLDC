@@ -22,6 +22,57 @@
 #include "utils.h"
 #include <math.h>
 #include "mc_interface.h"
+#include "luna_display_serial.h"
+#include "conf_general.h"
+// (volker, 07.10.2026) Verdrahtung je Controller, siehe hw_75_100_V2.h.
+// Gemessen und nach Funktion geprueft, nie nach Farbe oder Plan.
+// (volker, 11.10.2026) RECHTSRAHMEN UND KONFIGURATIONSSPERRE HAENGEN AN DER UUID.
+// Nur Controller mit s_pedelec = true (eigene, zugelassene S-Pedelecs) laufen
+// mit 45 km/h +5 % und ohne Konfigurationssperre. JEDER andere Controller ist
+// ein PEDELEC 25 (25 km/h, Schiebehilfe 6 km/h, Akkustrom max. 10 A) und
+// unterstuetzt erst, wenn eine Motorkonfiguration gespeichert ist (Wizard).
+// Wer selbst kompiliert und ein zugelassenes S-Pedelec hat, traegt hier seine
+// UUID ein (luna_pins zeigt sie) - die Verantwortung liegt dann bei ihm.
+static const luna_profil_t luna_profile[] = {
+	// Eigene Controller stehen in luna_profile_lokal.h (nicht im Repository,
+	// siehe .gitignore). Vorlage: luna_profile_lokal.h.beispiel
+#if __has_include("luna_profile_lokal.h")
+#include "luna_profile_lokal.h"
+#endif
+	// Endmarke: UUID 0 kommt bei echten Chips nicht vor
+	{"(Ende)", {0}, false, false, false, 11, false, false, 0.0f, 0.0f},
+};
+static const luna_profil_t luna_profil_standard =
+	{"Standard (unbekannte UUID)", {0}, false, false, false, 11, false, false, 0.0f, 0.0f};
+
+// PC10 weder Bremse noch Licht noch Display-Senden -> stilllegen (weisses Rad)
+bool luna_pc10_unbenutzt(void) {
+	const luna_profil_t *p = luna_profil();
+	bool licht_pc10 = !p->licht_an_pb && p->licht_pin == 10;
+	return p->bremse_adc1 && !licht_pc10 && !p->display_tx_pc10;
+}
+
+const luna_profil_t *luna_profil(void) {
+	static const luna_profil_t *p = 0;
+	if (p) {
+		return p;
+	}
+	p = &luna_profil_standard;
+	for (unsigned i = 0; i < sizeof(luna_profile) / sizeof(luna_profile[0]); i++) {
+		bool gleich = true;
+		for (int k = 0; k < 12; k++) {
+			if (STM32_UUID_8[k] != luna_profile[i].uuid[k]) {
+				gleich = false;
+				break;
+			}
+		}
+		if (gleich) {
+			p = &luna_profile[i];
+			break;
+		}
+	}
+	return p;
+}
 
 // Variables
 static volatile bool i2c_running = false;
@@ -47,6 +98,28 @@ void hw_init_gpio(void) {
 	palSetPadMode(LED_RED_GPIO, LED_RED_PIN,
 			PAL_MODE_OUTPUT_PUSHPULL |
 			PAL_STM32_OSPEED_HIGHEST);
+
+	// external Speedsensor
+#ifdef HW_HAS_WHEEL_SPEED_SENSOR
+	palSetPadMode(HW_SPEED_SENSOR_PORT, HW_SPEED_SENSOR_PIN, PAL_MODE_INPUT_PULLUP);
+#elif defined(LUNA_LIGHT_GPIO)
+	// (volker) Lichtausgang (PC11, Testcontroller PC10). Langsame Flanke genuegt, das Signal
+	// schaltet nur. OSPEED_LOWEST haelt die Stoerabstrahlung klein.
+	palSetPadMode(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN,
+			PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_LOWEST);
+	palClearPad(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN);
+#else
+	// (volker) ohne Radsensor bleibt PC11 passiver Eingang wie zuvor
+	palSetPadMode(GPIOC, 11, PAL_MODE_INPUT_PULLUP);
+#endif
+	// external Brakesensor (PC10) - nur im Standardprofil. Ist PC10 der
+	// Lichtausgang, wurde er oben schon gesetzt; sonst (weisses Rad,
+	// PC10 defekt) ohne Pull-up stilllegen.
+	if (!luna_profil()->bremse_adc1) {
+		palSetPadMode(HW_BRAKE_SENSOR_PORT, HW_BRAKE_SENSOR_PIN, PAL_MODE_INPUT_PULLUP);
+	} else if (luna_pc10_unbenutzt()) {
+		palSetPadMode(HW_BRAKE_SENSOR_PORT, HW_BRAKE_SENSOR_PIN, PAL_MODE_INPUT_ANALOG);
+	}
 
 	// GPIOA Configuration: Channel 1 to 3 as alternate function push-pull
 	palSetPadMode(GPIOA, 8, PAL_MODE_ALTERNATE(GPIO_AF_TIM1) |
@@ -110,6 +183,11 @@ void hw_init_gpio(void) {
 	palSetPadMode(GPIOC, 3, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOC, 4, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOC, 5, PAL_MODE_INPUT_ANALOG);
+	// (volker, 26.09.) 6, nicht 3: die Codes laufen in Zweier-Schritten,
+	// Display 3 ist PAS_LEVEL_6. Vorher stand hier die 3 und damit eine
+	// Stufe zwischen Display 1 und 2. Gilt ohne Display und bei jedem
+	// Display, das neu dazukommt.
+	luna_display_serial_start(6);
 }
 
 void hw_setup_adc_channels(void) {
@@ -242,3 +320,56 @@ void hw_try_restore_i2c(void) {
 		i2cReleaseBus(&HW_I2C_DEV);
 	}
 }
+// (volker) Der Radsensor-Block wird nur gebaut, wenn HW_HAS_WHEEL_SPEED_SENSOR
+// gesetzt ist. Ohne ihn liefert mc_interface_get_speed() das Tempo aus der
+// Motordrehzahl.
+#ifdef HW_HAS_WHEEL_SPEED_SENSOR
+volatile float wheel_rpm_filtered = 0;
+static float trip_odometer = 0;
+void hw_update_speed_sensor(void) {
+	static float wheel_rpm = 0;
+	static uint8_t sensor_state = 0;
+	static uint8_t sensor_state_old = 0;
+	static float last_sensor_event_time = 0;
+	float current_time = (float)chVTGetSystemTimeX() / (float)CH_CFG_ST_FREQUENCY;
+
+	sensor_state = palReadPad(HW_SPEED_SENSOR_PORT, HW_SPEED_SENSOR_PIN);
+
+	if(sensor_state == 0 && sensor_state_old == 1 ) {
+		float revolution_duration = current_time - last_sensor_event_time;
+
+		if (revolution_duration > 0.05) {	//ignore periods <50ms
+			last_sensor_event_time = current_time;
+			wheel_rpm = 60.0 / revolution_duration;
+			UTILS_LP_FAST(wheel_rpm_filtered, (float)wheel_rpm, 0.5);
+
+
+			const volatile mc_configuration *conf = mc_interface_get_configuration();
+			trip_odometer += conf->si_wheel_diameter * M_PI;
+			//trip_odometer += mc_interface_get_configuration()->si_wheel_diameter * M_PI; test this
+		}
+	} else {
+		// After 3 seconds without sensor signal, set RPM as zero
+		if ( (current_time - last_sensor_event_time) > 3.0) {
+			wheel_rpm_filtered = 0.0;
+		}
+	}
+	sensor_state_old = sensor_state;
+}
+
+/* Get speed in m/s */
+float hw_get_speed(void) {
+	const volatile mc_configuration *conf = mc_interface_get_configuration();
+	float speed = wheel_rpm_filtered * conf->si_wheel_diameter * M_PI / 60.0;
+	return speed;
+}
+
+/* Get trip distance in meters */
+float hw_get_distance(void) {
+	return trip_odometer;
+}
+
+float hw_get_distance_abs(void) {
+	return trip_odometer;
+}
+#endif // HW_HAS_WHEEL_SPEED_SENSOR

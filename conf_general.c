@@ -433,6 +433,10 @@ __attribute__((section(".text2"))) bool conf_general_store_app_configuration(app
  * @param conf
  * A pointer to a mc_configuration struct to write the read configuration to.
  */
+// (volker, 11.10.2026) true, wenn eine Motorkonfiguration im Flash steht
+// (VESC Tool "Write Motor Configuration" / Wizard). Sonst laufen Vorgabewerte.
+volatile bool conf_general_mcconf_gespeichert = false;
+
 __attribute__((section(".text2"))) void conf_general_read_mc_configuration(mc_configuration *conf, bool is_motor_2) {
 	bool is_ok = true;
 	uint8_t *conf_addr = (uint8_t*)conf;
@@ -463,6 +467,9 @@ __attribute__((section(".text2"))) void conf_general_read_mc_configuration(mc_co
 
 	if (!is_ok) {
 		confgenerator_set_defaults_mcconf(conf);
+	}
+	if (!is_motor_2) {
+		conf_general_mcconf_gespeichert = is_ok;
 	}
 }
 
@@ -508,6 +515,9 @@ __attribute__((section(".text2"))) bool conf_general_store_mc_configuration(mc_c
 	mc_interface_ignore_input_both(100);
 	utils_sys_unlock_cnt();
 
+	if (is_ok && !is_motor_2) {
+		conf_general_mcconf_gespeichert = true;
+	}
 	return is_ok;
 }
 

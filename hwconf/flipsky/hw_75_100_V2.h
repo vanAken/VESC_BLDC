@@ -18,8 +18,123 @@
 
 #define HW_NAME					"75_100_V2"
 
+// (volker) Vorgabewerte fuer Controller XXXXXX. Muss vor allen anderen
+// Einbindungen stehen, damit die #ifndef-Bloecke in mcconf_default.h und
+// appconf_default.h die Werte nicht mehr ueberschreiben. Erspart nach
+// jedem Firmware-Update die komplette Wiederherstellung.
+#include "conf_ebike.h"
+
 // (jaykup) HW properties
 #define HW_HAS_3_SHUNTS
+#define HW_HAS_LUNA_SERIAL_DISPLAY
+
+// (volker, 26.09.2026) SCHLANKER BUILD fuer das S-Pedelec.
+// Ein Controller, kein CAN-Geraet, und niemand flasht von hier aus andere
+// Chips per SWD. Zusammen mit USE_LISPBM ?= 0 in make/fw.mk gemessen:
+//   7.0 wie ausgeliefert : Flash 28 KB frei, RAM 21 KB, CCM 0,3 KB
+//   ohne LispBM          : Flash 194 KB,     RAM 55 KB, CCM 30 KB
+//   dazu diese beiden    : Flash 253 KB,     RAM 63 KB, CCM 35 KB
+// Zurueckholen: diese Zeilen auskommentieren bzw. make USE_LISPBM=1.
+// Die Terminalbefehle (luna_*) sind C und bleiben ohne LispBM erhalten.
+#define HAS_BLACKMAGIC			0
+#define HW_HAS_NO_CAN
+
+// (volker, 30.09.2026) NTC im Akku fuer die Reku bei Kaelte (app_adc.c).
+// Erst einkommentieren, wenn der Eingang am Geraet gefunden und gemessen
+// ist. Kandidat: ADC3 = PC5 (luna_pins zeigt dessen Spannung an).
+// Schaltung: 10 kOhm von 3,3 V an den Eingang, NTC 10k vom Eingang nach
+// Masse des Controllers. NTC isoliert auf die Zellen, eigene zwei Adern.
+//#define LUNA_AKKU_NTC_ADC		ADC_IND_EXT3
+
+// Bezug der Wicklungstemperatur: seit 10.10.2026 je Rad im Profil (hw_75_100_V2.c).
+// (volker) Radsensor abgeschaltet: Direktlaeufer ohne Hallgeber an PC11.
+// Damit nimmt mc_interface_get_speed() den #else-Zweig und rechnet das
+// Tempo aus Motordrehzahl, Polzahl, Uebersetzung und Raddurchmesser.
+// Das ist genau der Zustand vor Commit 9c6adce2 (23.10.2024).
+//#define HW_HAS_WHEEL_SPEED_SENSOR
+#define HW_HAS_BRAKE_SENSOR
+
+#ifdef HW_HAS_WHEEL_SPEED_SENSOR
+#define HW_SPEED_SENSOR_PORT	GPIOC
+#define HW_SPEED_SENSOR_PIN		11 //Use RX2 from UART2 connector
+#endif
+
+#ifdef HW_HAS_BRAKE_SENSOR
+#define HW_BRAKE_SENSOR_PORT	GPIOC
+#define HW_BRAKE_SENSOR_PIN		10
+// (volker, 26.09.2026) PINS NACH FUNKTION UND FARBE, NICHT NACH TX2/RX2.
+// Chip, Platinenbeschriftung, stancecokes Plan und sein Code-Kommentar
+// benennen PC10/PC11 jeweils anders - daraus kam wochenlange Verwirrung.
+// Gemessen, gleich am Rad (XXXXXX) und am Pruefstand (YYYYYY):
+//   PC10 = Bremse (TX2), Eingang mit Pull-up, Hebel zieht auf 0 V
+//   PC11 = Licht  (RX2), Ausgang 3,3 V
+//   Referenz ist das weisse Rad (XXXXXX), gemessen 03.10.2026 nach Funktion:
+//     Bremse ORANGE, Licht GRUEN.
+//   Testcontroller YYYYYY: Farben unbekannt, vor Gebrauch nach Funktion messen.
+#endif
+
+// (volker, 20.09.2026) PC11 ist durch den abgeschalteten Radsensor frei
+// und traegt jetzt den Lichtausgang. Geschaltet ueber CMD_LIGHT vom
+// Display (16 1A F1 = an, F0 = aus).
+//
+// Die Voraussetzung ist gemessen, nicht angenommen: luna_pins zeigte PC10
+// auf 0 bei gleichzeitig PC11 auf 1. Es gibt also keine Bruecke im
+// Kabelbaum, ueber die der getriebene Ausgang die Bremsleitung auf Masse
+// ziehen koennte.
+//
+// ACHTUNG, bekanntes und bewusst eingegangenes Risiko: Logikausgang mit
+// 3,3 V und rund 20 mA. Er darf nur einen HOCHOHMIGEN Enable-Eingang
+// ansteuern. Eine Lampe, ein Relais oder sonst eine niederohmige Last
+// direkt daran zerstoert den Pin - genau so ist PB11 am zweiten
+// Controller ausgefallen. Dazwischen gehoert ein MOSFET oder ein
+// Optokoppler.
+// WIEDER DEAKTIVIERT am 20.09.2026, unmittelbar nach der Freigabe.
+//
+// Meine Begruendung fuer die Freigabe war fehlerhaft: "PC10 lag auf 0,
+// waehrend PC11 auf 1 blieb, also keine Bruecke". Damals war PC11 ein
+// EINGANG MIT PULL-UP. Ein Pull-up von einigen zehn Kiloohm kann PC10
+// nicht herunterziehen - ein getriebener Push-Pull-Ausgang aber sehr
+// wohl. Die Messung hat den gefaehrlichen Fall also gar nicht geprueft.
+//
+// Beobachtung danach: Seit PC11 Ausgang ist und auf 0 steht (Licht aus),
+// liest PC10 dauerhaft 0, also "gebremst" - auch nachdem der Pull-up
+// erneut gesetzt wurde. Das passt genau zu einer Bruecke im Kabelbaum.
+// Folge war Bremsstrom im Stand, Brummen und ein zuckendes Rad.
+//
+// So ist PB11 am Controller YYYYYY ausgefallen. Erst wieder
+// einkommentieren, wenn die Bruecke mit dem Durchgangspruefer bei
+// ABGEZOGENEM Stecker ausgeschlossen ist.
+// FREIGEGEBEN am 20.09.2026, diesmal nach tauglicher Messung:
+// luna_pintest treibt PC11 und liest dabei PC10. Ergebnis: PC10 bleibt
+// bei 1, egal ob PC11 auf 0 oder 1 steht - es gibt KEINE Bruecke. Der
+// frueher vermutete Zusammenhang war ein Trugschluss aus einer Messung
+// mit zwei Eingaengen, die den gefaehrlichen Fall gar nicht pruefen kann.
+// Das Lichtmodul ist ohnehin noch nicht im Kabelbaum.
+#define LUNA_LIGHT_GPIO			(luna_profil()->licht_an_pb ? GPIOB : GPIOC)
+#define LUNA_LIGHT_PIN			(luna_profil()->licht_pin)
+
+// (volker, 07.10.2026) VERDRAHTUNG JE CONTROLLER, gewaehlt ueber die UUID.
+// Eine Firmware fuer alle Controller eines Rads; Tabelle in hw_75_100_V2.c.
+// Unbekannte UUID -> Standardbelegung (Werk): Display PB10/PB11, Bremse PC10,
+// Licht PC11.
+#ifndef __ASSEMBLER__
+#include <stdbool.h>
+#include <stdint.h>
+typedef struct {
+	const char *name;
+	uint8_t uuid[12];
+	bool    display_rx_pc11;   // Display-Empfang an PC11 statt PB11
+	bool    display_tx_pc10;   // Controller sendet an PC10 statt PB10 (Display ganz an UART2)
+	bool    bremse_adc1;       // Bremse am Gaseingang ADC1 statt PC10
+	uint8_t licht_pin;         // Pin des Lichtausgangs (10 oder 11)
+	bool    licht_an_pb;       // Lichtausgang an GPIOB (UART1) statt GPIOC (UART2)
+	bool    s_pedelec;         // eigenes, zugelassenes S-Pedelec: 45 km/h, keine Konfig.-Sperre
+	float   r_ref;             // Bezug Wicklungswiderstand in Ohm, 0 = unbekannt
+	float   t_ref;             // dabei gemessene Temperatur in Grad C
+} luna_profil_t;
+const luna_profil_t *luna_profil(void);
+bool luna_pc10_unbenutzt(void);
+#endif
 
 
 // Macros  
@@ -156,9 +271,9 @@
 #define HW_UART_P_DEV			SD4
 #define HW_UART_P_GPIO_AF		GPIO_AF_UART4
 #define HW_UART_P_TX_PORT		GPIOC
-#define HW_UART_P_TX_PIN		10
+#define HW_UART_P_TX_PIN		10 //is used for brake sensor
 #define HW_UART_P_RX_PORT		GPIOC
-#define HW_UART_P_RX_PIN		11
+#define HW_UART_P_RX_PIN		11 //is used for external Speedsensor
 
 // (jaykup) should be disabled as this unit has no bluetooth module to program
 // NRF SWD
@@ -281,5 +396,11 @@
 #define HW_LIM_DUTY_MIN			0.0, 0.1
 #define HW_LIM_DUTY_MAX			0.0, 0.99
 #define HW_LIM_TEMP_FET			-40.0, 110.0
+
+
+void hw_update_speed_sensor(void);
+float hw_get_speed(void);
+float hw_get_distance(void);
+float hw_get_distance_abs(void);
 
 #endif /* HW_75_100_V2_H_ */

@@ -79,7 +79,7 @@
 // The default app is UART in case the UART port is used for
 // firmware updates.
 #ifndef APPCONF_APP_TO_USE
-#define APPCONF_APP_TO_USE					APP_UART
+#define APPCONF_APP_TO_USE					APP_ADC_PAS
 #endif
 
 // PPM app configureation
@@ -144,7 +144,7 @@
 
 // ADC app configureation
 #ifndef APPCONF_ADC_CTRL_TYPE
-#define APPCONF_ADC_CTRL_TYPE				ADC_CTRL_TYPE_NONE
+#define APPCONF_ADC_CTRL_TYPE				ADC_CTRL_TYPE_CURRENT
 #endif
 #ifndef APPCONF_ADC_HYST
 #define APPCONF_ADC_HYST					0.15
@@ -165,7 +165,7 @@
 #define APPCONF_ADC_VOLTAGE_CENTER			2.0
 #endif
 #ifndef APPCONF_ADC_VOLTAGE2_START
-#define APPCONF_ADC_VOLTAGE2_START			0.9
+#define APPCONF_ADC_VOLTAGE2_START			1.6
 #endif
 #ifndef APPCONF_ADC_VOLTAGE2_END
 #define APPCONF_ADC_VOLTAGE2_END			3.0
@@ -308,7 +308,7 @@
 
 // PAS app
 #ifndef APPCONF_PAS_CTRL_TYPE
-#define APPCONF_PAS_CTRL_TYPE				PAS_CTRL_TYPE_NONE
+#define APPCONF_PAS_CTRL_TYPE				PAS_CTRL_TYPE_TORQUE
 #endif
 #ifndef APPCONF_PAS_SENSOR_TYPE
 #define APPCONF_PAS_SENSOR_TYPE				PAS_SENSOR_TYPE_QUADRATURE
@@ -332,7 +332,7 @@
 #define APPCONF_PAS_SAFE_START				true
 #endif
 #ifndef APPCONF_PAS_CURRENT_SCALING
-#define APPCONF_PAS_CURRENT_SCALING			0.1
+#define APPCONF_PAS_CURRENT_SCALING			0.5
 #endif
 #ifndef APPCONF_PAS_RAMP_TIME_POS
 #define APPCONF_PAS_RAMP_TIME_POS			0.6

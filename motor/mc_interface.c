@@ -2476,14 +2476,22 @@ static void update_override_limits(volatile motor_if_state_t *motor, volatile mc
 	}
 
 	// Regen overvoltage cutoff
+	// (volker) Die Konfigurationswerte stehen ab Werk auf 1000/1100 V, damit
+	// ist die Funktion wirkungslos. Sie sind weder ueber LispBM erreichbar
+	// noch ueber VESC Tool schreibbar (Signatursperre), deshalb hier fest
+	// vorgegeben. 13S Li-Ion: ab 4,12 V/Zelle zurueckfahren, bei 4,19 V/Zelle
+	// aus. Verhindert, dass das BMS bei kraeftiger Rekuperation abschaltet
+	// und der Zwischenkreis sich beim Wiedereinschalten in den Pack entlaedt.
+#define LUNA_REGEN_CUT_START	53.5f
+#define LUNA_REGEN_CUT_END		54.5f
 	float lo_in_min_batt = 0.0;
-	if (v_in < (conf->l_battery_regen_cut_start + 0.1)) {
+	if (v_in < (LUNA_REGEN_CUT_START + 0.1)) {
 		lo_in_min_batt = conf->l_in_current_min;
-	} else if (v_in > (conf->l_battery_regen_cut_end - 0.1)) {
+	} else if (v_in > (LUNA_REGEN_CUT_END - 0.1)) {
 		lo_in_min_batt = 0.0;
 	} else {
-		lo_in_min_batt = utils_map(v_in, conf->l_battery_regen_cut_start,
-				conf->l_battery_regen_cut_end, conf->l_in_current_min, 0.0);
+		lo_in_min_batt = utils_map(v_in, LUNA_REGEN_CUT_START,
+				LUNA_REGEN_CUT_END, conf->l_in_current_min, 0.0);
 	}
 
 	// Wattage limits

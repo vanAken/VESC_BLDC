@@ -42,6 +42,51 @@ void app_adc_stop(void);
 void app_adc_configure(adc_config *conf);
 float app_adc_get_decoded_level(void);
 float app_adc_get_voltage(void);
+// Rekuperationsstaerke 0..1, gesetzt aus der Displaystufe.
+// Siehe luna_display_serial.c und app_adc.c.
+void app_adc_set_regen_amps(float amps);
+float app_adc_get_ms_without_power(void);
+float app_adc_get_regen_ramp(void);
+float app_adc_get_regen_amps(void);
+// Schiebehilfe an/aus, gesetzt aus der Displaystufe (PAS_LEVEL_WALK).
+void app_adc_set_walk_assist(bool on);
+void app_adc_set_walk_amps(float amps);
+float app_adc_get_walk_amps(void);
+bool app_adc_get_walk_assist(void);
+// Mitschnitt der Bremsvorgaenge, ausgelesen ueber den Terminalbefehl luna_log
+int app_adc_log_count(void);
+bool app_adc_log_get(int i, float *t, float *dur, float *scal,
+		float *kmh0, float *kmh1, float *iin, float *imot, float *wh);
+void app_adc_log_clear(void);
+// Verlaufsaufzeichnung, geschaltet ueber die Lichttaste am Display
+void app_adc_trace_set(bool on);
+void app_adc_licht_taste(bool an);
+bool app_adc_trace_running(void);
+int app_adc_trace_count(void);
+int app_adc_trace_capacity(void);
+uint32_t app_adc_block_count(void);
+// Entprellter Bremszustand und Zaehler zur Beurteilung der Stoerimpulse
+bool app_adc_brake_state(void);
+uint32_t app_adc_brake_edges(void);
+uint32_t app_adc_brake_glitches(void);
+int app_adc_rmess_count(void);
+bool app_adc_rmess_get(int i, uint32_t *t_s, float *r, float *t_fet, float *v_in,
+		int *dauer_ms, int *fault);
+bool app_adc_rmess_ref(float *r_ref, float *t_ref);
+int app_adc_rmess_kalib(void);
+float app_adc_rmess_temp(float r);
+void app_adc_akku_temp(float *t, bool *ok, float *faktor, bool *eingebaut);
+void app_adc_volt_stats(float *v_min, float *i_min, float *v_max, float *i_max);
+void app_adc_brake_release_stats(uint32_t *letzte_ms, uint32_t *max_ms,
+		uint32_t *mittel_ms, uint32_t *n);
+void app_adc_trace_clear(void);
+uint32_t app_adc_trace_oldest(void);
+int app_adc_trace_seg_count(void);
+bool app_adc_trace_seg_get(int i, uint32_t *von, uint32_t *bis, float *t_start,
+		bool *ganz, int *modus);
+bool app_adc_trace_get(uint32_t abs, float *t, float *imot,
+		float *iin, float *kmh, float *vin, float *prpm, float *soll,
+		float *torq, float *tfet, int *flags);
 float app_adc_get_decoded_level2(void);
 float app_adc_get_voltage2(void);
 void app_adc_detach_adc(int detach);
@@ -82,6 +127,8 @@ void app_pas_configure(pas_config *conf);
 float app_pas_get_current_target_rel(void);
 float app_pas_get_pedal_rpm(void);
 void app_pas_set_current_sub_scaling(float current_sub_scaling);
+void app_pas_set_boost(float anteil);
+float app_pas_get_boost(void);
 
 // Custom apps
 void app_custom_start(void);

@@ -20,3 +20,6 @@ workspace.code-workspace
 
 .cache
 compile_commands.json
+
+# eigene Controller-UUIDs
+hwconf/flipsky/luna_profile_lokal.h

@@ -3,7 +3,9 @@
 # NOTE: Can be overridden externally.
 #
 
-USE_LISPBM ?= 1
+# (volker) Fuer das S-Pedelec ohne LispBM gebaut, siehe hw_75_100_V2.h.
+# Spart 166 KB Flash, 34 KB RAM und 30 KB CCM. Zurueck: make USE_LISPBM=1
+USE_LISPBM ?= 0
 
 # Compiler options here.
 ifeq ($(USE_OPT),)

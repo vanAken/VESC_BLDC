@@ -1,0 +1,10 @@
+// Vorlage fuer luna_profile_lokal.h (wird in hw_75_100_V2.c eingebunden).
+// Eine Zeile je eigenem Controller. UUID mit "luna_pins" auslesen.
+// Felder: Name, UUID[12], Display-RX an PC11, Display-TX an PC10,
+//         Bremse an ADC1, Licht-Pin (10/11), Licht an GPIOB,
+//         s_pedelec (45 km/h, keine Konfig.-Sperre - NUR mit Zulassung!),
+//         Bezug Wicklungswiderstand [Ohm] (0 = unbekannt), Bezugstemperatur [C]
+//
+//	{"mein Rad",
+//		{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+//		false, false, true, 11, false, false, 0.0f, 0.0f},

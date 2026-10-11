@@ -27,6 +27,9 @@
 #include "mc_interface.h"
 #include "commands.h"
 #include "hw.h"
+#ifdef HW_HAS_LUNA_SERIAL_DISPLAY
+#include "luna_display_serial.h"
+#endif
 #include "comm_can.h"
 #include "utils_math.h"
 #include "utils_sys.h"
@@ -40,6 +43,7 @@
 #include "firmware_metadata.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <math.h>
@@ -67,7 +71,11 @@ static volatile int fault_vec_write = 0;
 static terminal_callback_struct callbacks[CALLBACK_LEN];
 static int callback_write = 0;
 
-__attribute__((section(".text2"))) void terminal_process_string(char *str) {
+// (volker) Upstream legt diese Funktion in die Restflaeche der ersten
+// Flash-Seite (.text2, 16 KB), um Hauptflash zu sparen. Mit den luna_*-
+// Befehlen ist sie dafuer 3 KB zu gross. Im schlanken Build ohne LispBM
+// sind im Hauptflash ueber 200 KB frei - also dorthin.
+void terminal_process_string(char *str) {
 	// Echo command so user can see what they previously ran
 	commands_printf("-> %s \n", str);
 
@@ -986,6 +994,506 @@ __attribute__((section(".text2"))) void terminal_process_string(char *str) {
 		}
 	} else if (strcmp(argv[0], "uptime") == 0) {
 		commands_printf("Uptime: %.2f s\n", (double)chVTGetSystemTimeX() / (double)CH_CFG_ST_FREQUENCY);
+	} else if (strcmp(argv[0], "luna_pins") == 0) {
+		if (luna_profil()->s_pedelec) {
+			commands_printf("Rechtsrahmen : S-PEDELEC DE (45 km/h +5 %%), nur mit Zulassung");
+		} else {
+			commands_printf("Rechtsrahmen : PEDELEC 25 (25 km/h, Schiebehilfe 6 km/h, Akku 10 A)");
+		}
+		// (volker) Diagnose fuer PC10/PC11. Beantwortet die Frage, die
+		// Rekuperation und Lichtausgang blockiert: main.c startet
+		// UART_PORT_BUILTIN (SD4) bedingungslos und legt beide Pins auf
+		// UART4-Alternativfunktion um. Ob palReadPad den Bremsschalter
+		// dann noch sieht, ist unbewiesen - hier wird es gemessen.
+		commands_printf("Profil       : %s", luna_profil()->name);
+		commands_printf("Motorkonfig. : %s", conf_general_mcconf_gespeichert ? "im Flash gespeichert" :
+				(luna_profil()->s_pedelec ? "nur Vorgabewerte (eigenes Rad: keine Sperre)" :
+				"FEHLT - Motor-Wizard in VESC Tool ausfuehren (bis dahin gesperrt, Display Err 09)"));
+		commands_printf("UUID         : %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+				STM32_UUID_8[0], STM32_UUID_8[1], STM32_UUID_8[2], STM32_UUID_8[3],
+				STM32_UUID_8[4], STM32_UUID_8[5], STM32_UUID_8[6], STM32_UUID_8[7],
+				STM32_UUID_8[8], STM32_UUID_8[9], STM32_UUID_8[10], STM32_UUID_8[11]);
+		commands_printf("Display      : Controller sendet %s, empfaengt %s", luna_profil()->display_tx_pc10 ? "PC10" : "PB10", luna_profil()->display_rx_pc11 ? "PC11" : "PB11");
+		commands_printf("Rad          : %.3f m (Motorkonfig.)   Bezug Wicklung: %s%.3f mOhm bei %.1f C",
+				(double)mc_interface_get_configuration()->si_wheel_diameter,
+				luna_profil()->r_ref > 0.0 ? "" : "(unbekannt) ",
+				(double)(luna_profil()->r_ref * 1000.0), (double)luna_profil()->t_ref);
+		if (luna_profil()->bremse_adc1) {
+			commands_printf("Bremse an ADC1  : %.2f V -> %s  (zu < %.1f V, los > %.1f V; Gas AUS)",
+					(double)ADC_VOLTS(ADC_IND_EXT),
+					ADC_VOLTS(ADC_IND_EXT) < LUNA_BREMSE_ADC1_ZU_V ? "GEBREMST" : "nicht gebremst",
+					(double)LUNA_BREMSE_ADC1_ZU_V, (double)LUNA_BREMSE_ADC1_AUF_V);
+		} else {
+			commands_printf("PC10 Bremse (TX2) : %d   -> %s",
+					palReadPad(GPIOC, 10),
+					palReadPad(GPIOC, 10) ? "nicht gebremst" : "GEBREMST");
+		}
+#ifdef LUNA_LIGHT_GPIO
+		commands_printf("P%c%d Licht        : %d   -> Licht %s",
+				luna_profil()->licht_an_pb ? 'B' : 'C', LUNA_LIGHT_PIN,
+				palReadPad(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN),
+				palReadPad(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN) ? "AN" : "aus");
+		commands_printf("  Nur hochohmige Last! 3,3 V / ~20 mA.");
+#else
+		commands_printf("PC11               : %d", palReadPad(GPIOC, 11));
+#endif
+		commands_printf(" ");
+
+		// (volker) Warum greift die Rekuperation nicht? Das Tor in
+		// app_adc.c (~Zeile 511) springt per continue ueber den gesamten
+		// Steuerblock, wenn ms_without_power < 500 ODER range_ok falsch ist.
+		// Dahinter sitzt die Reku - also nie erreicht, solange es zu ist.
+		// Zusaetzlich setzt app_adc.c:201 den Zaehler bei jedem anstehenden
+		// Fehlercode wieder auf null.
+		float msw = app_adc_get_ms_without_power();
+		bool rok = app_adc_range_ok();
+		mc_fault_code f = mc_interface_get_fault();
+
+		commands_printf("--- Antriebs-Tor (safe start) ---");
+		commands_printf("Die Reku haengt NICHT mehr daran - sie wird davor");
+		commands_printf("ausgewertet und hat Vorfahrt. Hier geht es nur noch");
+		commands_printf("um Gasgriff, PAS und Schiebehilfe.");
+		commands_printf("range_ok           : %s", rok ? "ja" : "NEIN  <-- Tor zu");
+		commands_printf("ms_without_power   : %.0f ms  %s", (double)msw,
+				msw < 500.0 ? "<-- Tor zu (braucht 500)" : "(ok)");
+		commands_printf("Fehlercode         : %s%s",
+				mc_interface_fault_to_string(f),
+				f != FAULT_CODE_NONE ? "   <-- nullt den Zaehler, app_adc.c:201" : "");
+		if (msw < 500.0 && rok) {
+			commands_printf("  Grund meist: ADC1 ruht ueber der Start-Spannung.");
+			commands_printf("  Dann gilt der Gasgriff als betaetigt und der");
+			commands_printf("  Zaehler laeuft nie hoch. App-Konfiguration pruefen:");
+			commands_printf("  ADC1 Start Voltage muss ueber dem Ruhewert liegen.");
+		}
+		commands_printf("TOR IST            : %s",
+				(rok && msw >= 500.0) ? "OFFEN - Antrieb freigegeben"
+				                      : "ZU - Antrieb gesperrt (Reku laeuft trotzdem)");
+		commands_printf(" ");
+		commands_printf("--- Signale ---");
+		commands_printf("ADC1 (Gas)  : %.3f V   ADC2 (Moment): %.3f V",
+				(double)app_adc_get_voltage(), (double)app_adc_get_voltage2());
+		commands_printf("Schiebehilfe: %s", app_adc_get_walk_assist() ? "AN" : "aus");
+		commands_printf("Anfahrsperre: %lu mal gegriffen", (unsigned long)app_adc_block_count());
+		commands_printf(" ");
+		commands_printf("--- Akkutemperatur (Reku bei Kaelte) ---");
+		{
+			float t, f;
+			bool ok, eingebaut;
+			app_adc_akku_temp(&t, &ok, &f, &eingebaut);
+			commands_printf("ADC3 (PC5)  : %.3f V   <- zum Finden des Pads",
+					(double)ADC_VOLTS(ADC_IND_EXT3));
+			if (!eingebaut) {
+				commands_printf("NTC         : nicht eingebaut (LUNA_AKKU_NTC_ADC)");
+			} else if (!ok) {
+				commands_printf("NTC         : FEHLT/DEFEKT -> Reku unbegrenzt, BMS sperrt bei Frost");
+			} else {
+				commands_printf("Akku       : %.1f C   -> Reku %.0f %%", (double)t, (double)(f * 100.0));
+			}
+		}
+		commands_printf(" ");
+		commands_printf("--- Energie seit dem Einschalten ---");
+		{
+			float ah = mc_interface_get_amp_hours(false);
+			float ahc = mc_interface_get_amp_hours_charged(false);
+			float wh = mc_interface_get_watt_hours(false);
+			float whc = mc_interface_get_watt_hours_charged(false);
+			commands_printf("entnommen  : %.3f Ah   %.2f Wh", (double)ah, (double)wh);
+			commands_printf("zurueck    : %.3f Ah   %.2f Wh", (double)ahc, (double)whc);
+			if (wh > 0.01) {
+				commands_printf("Rueckgewinn: %.1f %% der entnommenen Energie",
+						(double)(whc / wh * 100.0));
+			}
+			const volatile mc_configuration *mcc = mc_interface_get_configuration();
+			float zellen = mcc->si_battery_cells > 0 ? (float)mcc->si_battery_cells : 13.0;
+			float vnow = mc_interface_get_input_voltage_filtered();
+			commands_printf("Spannung   : %.2f V  = %.3f V je Zelle bei %.0fS",
+					(double)vnow, (double)(vnow / zellen), (double)zellen);
+			float vmin, imin, vmax, imax;
+			app_adc_volt_stats(&vmin, &imin, &vmax, &imax);
+			if (vmin > 0.01) {
+				commands_printf("tiefste    : %.2f V (%.3f V/Zelle) bei %.1f A Antrieb",
+						(double)vmin, (double)(vmin / zellen), (double)imin);
+			}
+			if (vmax > 0.01) {
+				commands_printf("hoechste   : %.2f V (%.3f V/Zelle) bei %.1f A Reku"
+						"   <- daran muss das BMS vorbei",
+						(double)vmax, (double)(vmax / zellen), (double)imax);
+			}
+			if (vmin > 0.01 && vmax > 0.01 && (imin - imax) > 3.0) {
+				commands_printf("R_Akku+Kabel: %.0f mOhm  (aus den zwei Lastpunkten)",
+						(double)((vmax - vmin) / (imin - imax) * 1000.0));
+			}
+			commands_printf("Endstufe   : %.1f C", (double)mc_interface_temp_fet_filtered());
+		}
+		commands_printf(" ");
+#ifdef HW_HAS_LUNA_SERIAL_DISPLAY
+		luna_display_serial_print_status();
+		commands_printf(" ");
+#endif
+		commands_printf("Bremse entprellt: %s   Flanken: %lu   verworfene Stoerimpulse: %lu",
+				app_adc_brake_state() ? "GEBREMST" : "frei",
+				(unsigned long)app_adc_brake_edges(),
+				(unsigned long)app_adc_brake_glitches());
+		commands_printf("  Viele Stoerimpulse bei wenigen Flanken = Kabel oder Pull-up.");
+		{
+			uint32_t rl, rm, rmit, rn;
+			app_adc_brake_release_stats(&rl, &rm, &rmit, &rn);
+			commands_printf("Loesen erkannt nach: letzte %lu ms, Mittel %lu ms,"
+					" Maximum %lu ms  (%lu Messungen)",
+					(unsigned long)rl, (unsigned long)rmit,
+					(unsigned long)rm, (unsigned long)rn);
+			commands_printf("  Soll sind 10 ms (5 Abtastungen). Mehr heisst:"
+					" Stoerimpulse halten die Entprellung auf.");
+		}
+		commands_printf("Stufe->Schieben: %.0f A  (Taste kommt vom Display)",
+				(double)app_adc_get_walk_amps());
+		commands_printf("Stufe->Reku : %.1f A   Rampe aktuell: %.1f A",
+				(double)app_adc_get_regen_amps(),
+				(double)app_adc_get_regen_ramp());
+		commands_printf("Drehzahl    : %.0f ERPM   Tempo: %.1f km/h",
+				(double)mc_interface_get_rpm(),
+				(double)(mc_interface_get_speed() * 3.6));
+		commands_printf(" ");
+	} else if (strcmp(argv[0], "luna_log") == 0) {
+		// (volker) Bremsvorgaenge der laufenden Sitzung. Liegt im RAM -
+		// nach dem Stromlosmachen ist der Mitschnitt weg.
+		if (argc == 2 && strcmp(argv[1], "clear") == 0) {
+			app_adc_log_clear();
+			commands_printf("Mitschnitt geloescht.");
+			commands_printf(" ");
+		} else {
+			int n = app_adc_log_count();
+			commands_printf("Bremsvorgaenge: %d%s", n,
+					n > 32 ? "  (nur die letzten 32 im Puffer)" : "");
+			commands_printf("  #   Zeit   Dauer  Soll     km/h von->bis   I_Akku   I_Motor    Wh");
+			float t, dur, scal, k0, k1, iin, imot, wh;
+			for (int i = 0; ; i++) {
+				if (!app_adc_log_get(i, &t, &dur, &scal, &k0, &k1, &iin, &imot, &wh)) {
+					break;
+				}
+				commands_printf("  %-3d %5.0fs %5.1fs %5.0fA  %6.1f -> %5.1f  %7.2fA %8.2fA %6.3f",
+						i + 1, (double)t, (double)dur, (double)scal,
+						(double)k0, (double)k1, (double)iin, (double)imot, (double)wh);
+			}
+			commands_printf(" ");
+			commands_printf("Loeschen mit: luna_log clear");
+			commands_printf(" ");
+		}
+
+	} else if (strcmp(argv[0], "luna_err") == 0) {
+		// (volker, 11.10.2026) Statusbyte fuers Display testen (Bafang-Fehlercode,
+		// hex). luna_err 0 = wieder automatisch, luna_err 01 = in Ordnung.
+		if (argc == 2) {
+			unsigned int c = 0;
+			sscanf(argv[1], "%x", &c);
+			luna_display_serial_status_setzen((uint8_t)c);
+			commands_printf("Display-Status: 0x%02X%s", c, c == 0 ? " (automatisch)" : "");
+		} else {
+			commands_printf("luna_err <hex>   z. B. luna_err 09, zurueck: luna_err 0");
+		}
+	} else if (strcmp(argv[0], "luna_light") == 0) {
+		// (volker) Lichtausgang von Hand schalten. Gebraucht auf dem
+		// Pruefstand: Controller YYYYYY hat einen defekten PB11, das
+		// Display kann ihm also kein CMD_LIGHT schicken. Am Rad schaltet
+		// die Lichttaste, hier das Terminal.
+		//
+		// ACHTUNG: Logikausgang, 3,3 V und rund 20 mA. Nur an einen
+		// hochohmigen Steuereingang. Vor dem Anschliessen die
+		// Leerlaufspannung des Eingangs messen - liegt sie ueber 5 V,
+		// gehoert ein MOSFET oder Optokoppler dazwischen.
+#ifdef LUNA_LIGHT_GPIO
+		if (argc == 2 && (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "1") == 0)) {
+			palSetPadMode(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN,
+					PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_LOWEST);
+			palSetPad(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN);
+			commands_printf("Lichtausgang P%c%d: AN (3,3 V)", luna_profil()->licht_an_pb ? 'B' : 'C', LUNA_LIGHT_PIN);
+		} else if (argc == 2 && (strcmp(argv[1], "off") == 0 || strcmp(argv[1], "0") == 0)) {
+			palSetPadMode(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN,
+					PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_LOWEST);
+			palClearPad(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN);
+			commands_printf("Lichtausgang P%c%d: AUS (0 V)", luna_profil()->licht_an_pb ? 'B' : 'C', LUNA_LIGHT_PIN);
+		} else {
+			commands_printf("Lichtausgang PC%d steht auf %d",
+					LUNA_LIGHT_PIN, palReadPad(LUNA_LIGHT_GPIO, LUNA_LIGHT_PIN));
+			commands_printf("Schalten mit: luna_light on | off");
+		}
+		commands_printf("Die Lichttaste am Display schaltet zugleich luna_trace.");
+#else
+		commands_printf("Lichtausgang ist nicht einkompiliert.");
+		commands_printf("LUNA_LIGHT_GPIO in hw_75_100_V2.h einkommentieren.");
+#endif
+		commands_printf(" ");
+
+	} else if (strcmp(argv[0], "luna_rmess") == 0) {
+		// (volker, 01.10.2026) Wicklungstemperatur aus dem Widerstand.
+		// Gemessen wird im Stand, wenn die Bremse 2 s gehalten wird, und
+		// dann Lichttaste (seit 04.10.2026 nur noch auf dieses Zeichen).
+		if (argc == 2 && strcmp(argv[1], "kalib") == 0) {
+			int k = app_adc_rmess_kalib();
+			if (k > 0) {
+				float rr, tr;
+				app_adc_rmess_ref(&rr, &tr);
+				commands_printf("Bezug gesetzt aus %d Messungen: %.3f mOhm bei %.1f C (Endstufe).",
+						k, (double)(rr * 1000.0), (double)tr);
+				commands_printf("Nur gueltig nach langem Stehen: Wicklung = Endstufe = Umgebung.");
+				commands_printf("Fest einbauen in hw_75_100_V2.h:");
+				commands_printf("  #define LUNA_RMESS_R_REF  %.6ff", (double)rr);
+				commands_printf("  #define LUNA_RMESS_T_REF  %.1ff", (double)tr);
+			} else {
+				commands_printf("Noch keine gueltige Messung. Bremse im Stand 2 s halten.");
+			}
+			commands_printf(" ");
+		} else {
+			float rr, tr;
+			bool ok = app_adc_rmess_ref(&rr, &tr);
+			commands_printf("Wicklungstemperatur aus dem Widerstand");
+			commands_printf("Messen: im Stand Bremse 2 s halten, dann Lichttaste. Licht blinkt 0,1 s = gemessen.");
+			if (ok) {
+				commands_printf("Bezug: %.3f mOhm bei %.1f C", (double)(rr * 1000.0), (double)tr);
+			} else {
+				commands_printf("Bezug: FEHLT - nach langem Stehen messen, dann 'luna_rmess kalib'");
+			}
+			commands_printf(" ");
+			commands_printf("  Nr    Zeit  R_mOhm  T_Wickl  T_Endst  U_Akku  Dauer  Fehler");
+			int n = app_adc_rmess_count();
+			for (int i = 0; i < n; i++) {
+				uint32_t t; float r, tf, v; int d, f;
+				if (!app_adc_rmess_get(i, &t, &r, &tf, &v, &d, &f)) {
+					break;
+				}
+				float tw = app_adc_rmess_temp(r);
+				char tws[12];
+				if (tw > -900.0 && f == 0) {
+					snprintf(tws, sizeof(tws), "%6.1f", (double)tw);
+				} else {
+					snprintf(tws, sizeof(tws), "     -");
+				}
+				commands_printf("  %-3d %6lus %7.3f   %s   %6.1f  %6.2f  %4dms  %s",
+						i + 1, (unsigned long)t, (double)(r * 1000.0), tws,
+						(double)tf, (double)v, d,
+						f == 0 ? "-" : mc_interface_fault_to_string((mc_fault_code)f));
+			}
+			commands_printf(" ");
+		}
+
+	} else if (strcmp(argv[0], "luna_soc") == 0) {
+#ifdef HW_HAS_LUNA_SERIAL_DISPLAY
+		// (volker) Ladestand von Hand vorgeben. Damit laesst sich am
+		// Schreibtisch herausfinden, welchen Balken das Display bei welcher
+		// Prozentzahl zeichnet - ohne den Akku leerzufahren.
+		if (argc == 2 && strcmp(argv[1], "auto") == 0) {
+			luna_display_serial_soc_force(-1);
+			commands_printf("Ladestand kommt wieder aus der Messung.");
+			commands_printf(" ");
+		} else if (argc == 2) {
+			int p = atoi(argv[1]);
+			if (p < 0 || p > 100) {
+				commands_printf("0 bis 100, oder auto.");
+			} else {
+				luna_display_serial_soc_force(p);
+				commands_printf("Sende jetzt %d %% ans Display.", p);
+				commands_printf("Beenden mit: luna_soc auto");
+			}
+			commands_printf(" ");
+		} else {
+			int f = luna_display_serial_soc_forced();
+			float wh = 0.0;
+			float echt = mc_interface_get_battery_level(&wh) * 100.0;
+			const volatile mc_configuration *mcc = mc_interface_get_configuration();
+			float z = mcc->si_battery_cells > 0 ? (float)mcc->si_battery_cells : 13.0;
+			float v = mc_interface_get_input_voltage_filtered();
+			commands_printf("Messung  : %.0f %%  bei %.2f V (%.3f V/Zelle)",
+					(double)echt, (double)v, (double)(v / z));
+			if (f >= 0) {
+				commands_printf("Gesendet : %d %%  VON HAND", f);
+			} else {
+				commands_printf("Gesendet : die Messung");
+			}
+			commands_printf(" ");
+			commands_printf("luna_soc <0..100>   Wert von Hand senden");
+			commands_printf("luna_soc auto       wieder die Messung senden");
+			commands_printf(" ");
+		}
+#else
+		commands_printf("Kein serielles Display in diesem Build.");
+#endif
+
+	} else if (strcmp(argv[0], "luna_trace") == 0) {
+		// (volker) Verlauf aus der Aufzeichnung. Sie laeuft immer: jede
+		// Sekunde bei Licht an, alle 20 s in Fahrt, alle 2 min im Stand.
+		// Jede Umschaltung des Lichts beginnt eine Sequenz, das Aelteste
+		// wird ueberschrieben.
+		if (argc == 2 && strcmp(argv[1], "clear") == 0) {
+			app_adc_trace_clear();
+			commands_printf("Aufzeichnung geloescht.");
+			commands_printf(" ");
+		} else {
+			int ns = app_adc_trace_seg_count();
+			int n = app_adc_trace_count();
+			commands_printf("Punkte: %d von %d   Takt: 1 s Bremse+Licht an, 10 s Display an,"
+					" 5 min Display aus",
+					n, app_adc_trace_capacity());
+			if (ns == 0) {
+				commands_printf("Noch keine Sequenz.");
+				commands_printf(" ");
+			} else if (argc == 2) {
+				// Eine Sequenz ausgeben. t ist relativ zum Sequenzanfang.
+				int w = atoi(argv[1]) - 1;
+				uint32_t von, bis;
+				float t0;
+				bool ganz;
+				int modus;
+				if (!app_adc_trace_seg_get(w, &von, &bis, &t0, &ganz, &modus)) {
+					commands_printf("Sequenz %d gibt es nicht (1 bis %d).",
+							w + 1, ns);
+					commands_printf(" ");
+				} else {
+					float t, imot, iin, kmh, vin, prpm, soll, torq, tfet;
+					int fl;
+					float t_end = t0;
+					if (bis > von && app_adc_trace_get(bis - 1, &t_end, &imot, &iin,
+							&kmh, &vin, &prpm, &soll, &torq, &tfet, &fl)) {
+						// t_end gesetzt
+					}
+					commands_printf("Sequenz %d   ab %.0fs   %.0fs   %lu Punkte   %s%s",
+							w + 1, (double)t0, (double)(t_end - t0),
+							(unsigned long)(bis - von),
+							modus == 2 ? "Licht an" : (modus == 1 ? "Display an" : "Display aus"),
+							ganz ? "" : "   (Anfang ueberschrieben)");
+					commands_printf(" ");
+					commands_printf("   t_s  I_Mot  I_Akku    km/h   V_in  Tritt"
+							"  Moment  Soll  TFET  BSRG");
+					for (uint32_t i = von; i < bis; i++) {
+						if (!app_adc_trace_get(i, &t, &imot, &iin, &kmh,
+								&vin, &prpm, &soll, &torq, &tfet, &fl)) {
+							break;
+						}
+						commands_printf("%6.0f %6.1f %7.1f %7.1f %6.2f %6.0f"
+								" %6.0f%% %5.0f %5.0f  %c%c%c%c",
+								(double)(t - t0), (double)imot, (double)iin,
+								(double)kmh, (double)vin, (double)prpm,
+								(double)torq, (double)soll, (double)tfet,
+								(fl & 1) ? 'B' : '-',
+								(fl & 2) ? 'S' : '-',
+								(fl & 4) ? 'R' : '-',
+								(fl & 8) ? 'G' : '-');
+					}
+					commands_printf(" ");
+					commands_printf("B = Bremse, S = Schiebehilfe, R = Reku aktiv,");
+					commands_printf("G = Stoerimpuls am Bremseingang abgefangen");
+					commands_printf(" ");
+				}
+			} else {
+				// Uebersicht.
+				commands_printf(" ");
+				commands_printf("  Nr  Zustand     ab    Dauer  Punkte   km/h von->bis"
+						"   I_Mot Spitze  TFET   R_Akku");
+				for (int i = 0; i < ns; i++) {
+					uint32_t von, bis;
+					float t0;
+					bool ganz;
+					int modus;
+					if (!app_adc_trace_seg_get(i, &von, &bis, &t0, &ganz, &modus)) {
+						continue;
+					}
+					float t, imot, iin, kmh, vin, prpm, soll, torq, tfet;
+					int fl;
+					float kmh_a = 0.0, kmh_b = 0.0, imax = 0.0, tmax = 0.0;
+					float t_end = t0;
+					// Innenwiderstand aus benachbarten Punkten: nur Paare
+					// hoechstens 2 s auseinander mit mindestens 5 A
+					// Stromsprung. So faellt das langsame Absinken der
+					// Ruhespannung ueber die Fahrt heraus, das sonst den
+					// Wert verfaelscht. Ausgleichsgerade durch den Ursprung:
+					// R = -Summe(dU*dI) / Summe(dI^2). Geht praktisch nur bei
+					// Licht an (Sekundentakt).
+					float sxy = 0.0, sxx = 0.0;
+					int npaar = 0;
+					float t_v = 0.0, i_v = 0.0, v_v = 0.0;
+					bool erst = true;
+					for (uint32_t k = von; k < bis; k++) {
+						if (!app_adc_trace_get(k, &t, &imot, &iin, &kmh,
+								&vin, &prpm, &soll, &torq, &tfet, &fl)) {
+							break;
+						}
+						if (erst) {
+							kmh_a = kmh;
+						} else if ((t - t_v) <= 2.0 && fabsf(iin - i_v) >= 5.0) {
+							float di = iin - i_v;
+							float du = vin - v_v;
+							sxy += du * di;
+							sxx += di * di;
+							npaar++;
+						}
+						erst = false;
+						t_v = t; i_v = iin; v_v = vin;
+						kmh_b = kmh;
+						t_end = t;
+						if (fabsf(imot) > fabsf(imax)) {
+							imax = imot;
+						}
+						if (tfet > tmax) {
+							tmax = tfet;
+						}
+					}
+					char rtxt[16];
+					if (npaar >= 3 && sxx > 1.0) {
+						snprintf(rtxt, sizeof(rtxt), "%4.0f mOhm", (double)(-sxy / sxx * 1000.0));
+					} else {
+						snprintf(rtxt, sizeof(rtxt), "     -   ");
+					}
+					commands_printf("  %-3d %-7s %6.0fs %7.0fs %7lu  %5.1f -> %5.1f"
+							"   %7.1f A %4.0fC  %s%s",
+							i + 1, modus == 2 ? "Licht" : (modus == 1 ? "Display" : "aus"),
+							(double)t0,
+							(double)(t_end - t0), (unsigned long)(bis - von),
+							(double)kmh_a, (double)kmh_b, (double)imax,
+							(double)tmax, rtxt,
+							ganz ? "" : "  (beschnitten)");
+				}
+				commands_printf(" ");
+				commands_printf("Einzeln ausgeben: luna_trace <Nr>");
+				commands_printf("Loeschen        : luna_trace clear");
+				commands_printf(" ");
+			}
+		}
+
+	} else if (strcmp(argv[0], "luna_dump_conf") == 0) {
+		// (volker) Gibt die Motorkonfiguration als fertige #define-Zeilen aus.
+		// Zweck: die Werte in den Hardware-Header backen, damit nach einem
+		// Flash nicht jedes Mal Erkennung, LispBM-Skript und App-Konfiguration
+		// nachgezogen werden muessen. Die Hall-Tabelle ist ueber conf-get
+		// nicht erreichbar, deshalb dieser Weg.
+		const volatile mc_configuration *c = mc_interface_get_configuration();
+
+		commands_printf("// --- aus luna_dump_conf, in hw_75_100_V2.h einfuegen ---");
+		commands_printf("#define MCCONF_FOC_MOTOR_R\t\t\t%.8f", (double)c->foc_motor_r);
+		commands_printf("#define MCCONF_FOC_MOTOR_L\t\t\t%.10f", (double)c->foc_motor_l);
+		commands_printf("#define MCCONF_FOC_MOTOR_LD_LQ_DIFF\t%.10f", (double)c->foc_motor_ld_lq_diff);
+		commands_printf("#define MCCONF_FOC_MOTOR_FLUX_LINKAGE\t%.8f", (double)c->foc_motor_flux_linkage);
+		commands_printf("#define MCCONF_FOC_OBSERVER_GAIN\t%.4f", (double)c->foc_observer_gain);
+		commands_printf("#define MCCONF_FOC_CURRENT_KP\t\t%.8f", (double)c->foc_current_kp);
+		commands_printf("#define MCCONF_FOC_CURRENT_KI\t\t%.6f", (double)c->foc_current_ki);
+		commands_printf("#define MCCONF_FOC_SENSOR_MODE\t\t%d", c->foc_sensor_mode);
+		for (int i = 0; i < 8; i++) {
+			commands_printf("#define MCCONF_FOC_HALL_TAB_%d\t\t%d", i, c->foc_hall_table[i]);
+		}
+		commands_printf("#define MCCONF_M_INVERT_DIRECTION\t%s", c->m_invert_direction ? "true" : "false");
+		commands_printf("#define MCCONF_SI_MOTOR_POLES\t\t%d", c->si_motor_poles);
+		commands_printf("#define MCCONF_SI_GEAR_RATIO\t\t%.4f", (double)c->si_gear_ratio);
+		commands_printf("#define MCCONF_SI_WHEEL_DIAMETER\t%.4f", (double)c->si_wheel_diameter);
+		commands_printf("#define MCCONF_SI_BATTERY_CELLS\t\t%d", c->si_battery_cells);
+		commands_printf("#define MCCONF_SI_BATTERY_AH\t\t%.2f", (double)c->si_battery_ah);
+		commands_printf("#define MCCONF_L_CURRENT_MAX\t\t%.1f", (double)c->l_current_max);
+		commands_printf("#define MCCONF_L_CURRENT_MIN\t\t%.1f", (double)c->l_current_min);
+		commands_printf("#define MCCONF_L_IN_CURRENT_MAX\t\t%.1f", (double)c->l_in_current_max);
+		commands_printf("#define MCCONF_L_IN_CURRENT_MIN\t\t%.1f", (double)c->l_in_current_min);
+		commands_printf("#define MCCONF_L_MAX_ABS_CURRENT\t%.1f", (double)c->l_abs_current_max);
+		commands_printf("#define MCCONF_L_BATTERY_CUT_START\t%.2f", (double)c->l_battery_cut_start);
+		commands_printf("#define MCCONF_L_BATTERY_CUT_END\t%.2f", (double)c->l_battery_cut_end);
+		commands_printf("// --- Ende ---");
+		commands_printf(" ");
+
 	} else if (strcmp(argv[0], "hall_analyze") == 0) {
 		if (argc == 2) {
 			float current = -1.0;
@@ -1263,6 +1771,25 @@ __attribute__((section(".text2"))) void terminal_process_string(char *str) {
 
 		commands_printf("uptime");
 		commands_printf("  Prints how many seconds have passed since boot.");
+
+		commands_printf("luna_log [clear]");
+		commands_printf("  Bremsvorgaenge der laufenden Sitzung anzeigen.");
+
+		commands_printf("luna_light [on|off]");
+		commands_printf("  Lichtausgang von Hand schalten (Pruefstand).");
+
+		commands_printf("luna_rmess [kalib]");
+		commands_printf("  Wicklungstemperatur aus dem Widerstand (Bremse im Stand 2 s).");
+		commands_printf("luna_soc [<0..100> | auto]");
+		commands_printf("  Ladestand ans Display von Hand vorgeben.");
+		commands_printf("luna_trace [<Nr> | clear]");
+		commands_printf("  Verlauf anzeigen. Laeuft immer: 1 s Bremse+Licht an, 10 s Display, 5 min aus.");
+
+		commands_printf("luna_dump_conf");
+		commands_printf("  Motorkonfiguration als #define-Zeilen ausgeben.");
+
+		commands_printf("luna_pins");
+		commands_printf("  Zustand von PC10 (Bremse) und PC11 anzeigen.");
 
 		commands_printf("hall_analyze [current]");
 		commands_printf("  Rotate motor in open loop and analyze hall sensors.");
