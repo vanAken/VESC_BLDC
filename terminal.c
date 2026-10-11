@@ -1180,6 +1180,16 @@ void terminal_process_string(char *str) {
 			commands_printf(" ");
 		}
 
+	} else if (strcmp(argv[0], "luna_null") == 0) {
+		// (volker, 12.10.2026) Nullbytes auf PB10 (Display-RX, gruen) zum
+		// Ader-Finden. luna_null [sekunden], Standard 10, hoechstens 60.
+		int sek = 10;
+		if (argc == 2) { sscanf(argv[1], "%d", &sek); }
+		if (sek < 1) { sek = 1; }
+		if (sek > 60) { sek = 60; }
+		commands_printf("Sende %d s Nullbytes auf PB10 - dort ~0,3 V statt 3,3 V.", sek);
+		luna_display_serial_null_senden(sek);
+		commands_printf("Fertig.");
 	} else if (strcmp(argv[0], "luna_err") == 0) {
 		// (volker, 11.10.2026) Statusbyte fuers Display testen (Bafang-Fehlercode,
 		// hex). luna_err 0 = wieder automatisch, luna_err 01 = in Ordnung.

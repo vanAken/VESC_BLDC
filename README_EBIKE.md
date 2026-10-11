@@ -37,7 +37,7 @@ Grundlage.
 2. Die blaue Ader (Kp) am Display führt Akkuspannung: isolieren.
 3. Sicherungen für Gleichspannung ≥ 58 V verwenden.
 4. Bremse an ADC1 mit 4,7 kΩ nach 3,3 V und 150 nF nach Masse.
-5. Aufdruck TX/RX auf der Platine gilt aus Sicht des Displays.
+5. Aufdruck TX/RX auf der Platine gilt aus Sicht des Controllers, gekreuzt verbinden: Display-TX (Pin 5) an RX, Display-RX (Pin 4) an TX. Error 30 trotz Strom: diese beiden Adern tauschen (ungefaehrlich), mit `luna_null` pruefbar.
 
 ## Terminalbefehle (VESC Tool → Terminal)
 `luna_pins` Zustand · `luna_trace` Aufzeichnung · `luna_rmess [kalib]`

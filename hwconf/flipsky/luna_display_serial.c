@@ -944,3 +944,13 @@ static THD_FUNCTION(display_process_thread, arg) {
 	}
 }
 #endif
+
+// (volker, 12.10.2026) Leitungstest: Nullbytes auf der Sendeleitung (PB10,
+// gruen). Bei 1200 Baud ist die Leitung dann ~90 % der Zeit auf 0 V - das
+// Messgeraet zeigt ~0,3 V statt 3,3 V. So findet man die Ader am Stecker.
+void luna_display_serial_null_senden(int sekunden) {
+	static const uint8_t nullen[12] = {0};
+	for (int i = 0; i < sekunden * 10; i++) {
+		sdWrite(&HW_UART_DEV, nullen, sizeof(nullen));
+	}
+}
