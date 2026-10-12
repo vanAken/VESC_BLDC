@@ -1180,6 +1180,15 @@ void terminal_process_string(char *str) {
 			commands_printf(" ");
 		}
 
+	} else if (strcmp(argv[0], "luna_tacho") == 0) {
+		// (volker, 12.10.2026) Tacho zeigt eine feste Zahl. luna_tacho <kmh> [s]
+		int kmh = 85, sek = 10;
+		if (argc >= 2) { sscanf(argv[1], "%d", &kmh); }
+		if (argc >= 3) { sscanf(argv[2], "%d", &sek); }
+		if (sek < 1) { sek = 1; }
+		if (sek > 120) { sek = 120; }
+		luna_display_serial_tacho_zeigen(kmh, sek);
+		commands_printf("Tacho zeigt %d km/h fuer %d s.", kmh, sek);
 	} else if (strcmp(argv[0], "luna_null") == 0) {
 		// (volker, 12.10.2026) Nullbytes auf PB10 (Display-RX, gruen) zum
 		// Ader-Finden. luna_null [sekunden], Standard 10, hoechstens 60.

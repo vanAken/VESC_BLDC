@@ -17,7 +17,7 @@ Grundlage.
   Akkustrom höchstens 10 A
 - Anfahrsperre: Antrieb nur beim Treten, Schieben oder rollendem Rad
 - Stufentabellen relativ zum eingestellten Motorstrom (Bezug 60 A)
-- Wicklungstemperatur über den Widerstand (`luna_rmess`)
+- Wicklungstemperatur über den Widerstand (`luna_rmess`): im Stand Bremse 2 s halten, dann Lichttaste – der Tacho zeigt 10 s lang die Temperatur in °C (0–98, braucht einmal `luna_rmess kalib` bei kaltem Motor)
 - Aufzeichnung im RAM, 2048 Punkte (`luna_trace`), 10-s-Takt = 5,7 h Fahrt.
   Weg, wenn der Akku ab ist. Dafür sind CAN und LispBM entfernt.
 
@@ -41,7 +41,7 @@ Grundlage.
 
 ## Terminalbefehle (VESC Tool → Terminal)
 `luna_pins` Zustand · `luna_trace` Aufzeichnung · `luna_rmess [kalib]`
-Wicklungstemperatur · `luna_err <hex>` Displaystatus testen
+Wicklungstemperatur · `luna_err <hex>` Displaystatus testen · `luna_tacho <zahl> [s]` Zahl im Tacho zeigen · `luna_null [s]` Display-Adern finden
 
 ## Rechtliches
 Die Firmware ist als Pedelec 25 ausgelegt. Der Betreiber ist dafür

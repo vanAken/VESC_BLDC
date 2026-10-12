@@ -192,6 +192,15 @@ void luna_display_serial_licht_signal(bool start) {
 // Nur im RAM, ein Neustart stellt die Messung wieder her.
 static volatile int luna_soc_force = -1;
 
+// (volker, 12.10.2026) Tacho als Anzeige: zeigt luna_tacho_kmh bis luna_tacho_bis.
+// Spaeter fuer die Wicklungstemperatur nach der Messung (85 C -> "85").
+static volatile int luna_tacho_kmh = -1;
+static volatile systime_t luna_tacho_bis = 0;
+void luna_display_serial_tacho_zeigen(int kmh, int sekunden) {
+	luna_tacho_bis = chVTGetSystemTimeX() + MS2ST(sekunden * 1000);
+	luna_tacho_kmh = kmh;
+}
+
 // (volker, 20.09.) HEIMFAHR-MODUS: Ohne Display gilt die Vorgabestufe aus
 // luna_display_serial_start(6) = Display 3. Eine Zwischenfassung hatte die
 // Rekuperation bis zum ersten Displaybefehl gesperrt - das ist wieder
@@ -712,6 +721,12 @@ static void serial_display_byte_process(unsigned char byte) {
 					// rpm = spd [m/s] / perim [m] * 60[s/min]
 					const volatile mc_configuration *conf = mc_interface_get_configuration();
 					uint16_t wheel_rpm = (uint16_t)(mc_interface_get_speed() / (M_PI * conf->si_wheel_diameter) * 60.0);
+					// (volker, 12.10.2026) Tacho als Anzeige: feste km/h fuer eine Zeit
+					if (luna_tacho_kmh >= 0 && chVTGetSystemTimeX() < luna_tacho_bis) {
+						// SW102 gemessen 12.10.2026: zeigt 1 weniger (85 -> 84, 99 -> 98,
+						// 86 -> 85). Deshalb +1. 100 zeigt es zweistellig als "00".
+						wheel_rpm = (uint16_t)ceilf((float)(luna_tacho_kmh + 1) / 3.6 / (M_PI * conf->si_wheel_diameter) * 60.0);
+					}
 					serial_buffer.tx[0] = (uint8_t)(wheel_rpm / 256);
 					serial_buffer.tx[1] = (uint8_t)(wheel_rpm & 0xFFFF);
 					serial_buffer.tx[2] = serial_buffer.tx[0] + serial_buffer.tx[1] + 32;

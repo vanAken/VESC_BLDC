@@ -325,6 +325,13 @@ static void luna_rmess_im_halt(int ms_je_durchlauf) {
 #ifdef HW_HAS_LUNA_SERIAL_DISPLAY
 	if (fault == 0) {
 		luna_display_serial_licht_blink();   // 0,1 s: "gemessen"
+		// (volker, 12.10.2026) Wicklungstemperatur 10 s im Tacho: 85 C -> "85".
+		// Nur mit Bezugswert (luna_rmess kalib); im Stand eindeutig.
+		float tw = app_adc_rmess_temp(r);
+		if (tw > -900.0) {
+			utils_truncate_number(&tw, 0.0, 98.0);   // 99+1 waere "00"
+			luna_display_serial_tacho_zeigen((int)(tw + 0.5), 10);
+		}
 	}
 #endif
 }

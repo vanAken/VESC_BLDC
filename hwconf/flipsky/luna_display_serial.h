@@ -32,6 +32,7 @@ void luna_display_serial_licht_blink(void);
 void luna_display_serial_status_setzen(uint8_t code);
 uint8_t luna_display_status(void);
 void luna_display_serial_null_senden(int sekunden);
+void luna_display_serial_tacho_zeigen(int kmh, int sekunden);
 void luna_display_serial_licht_signal(bool start);
 // Ladestand von Hand vorgeben (0..100) oder -1 fuer die echte Messung.
 void luna_display_serial_soc_force(int prozent);
