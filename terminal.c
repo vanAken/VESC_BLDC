@@ -1266,7 +1266,9 @@ void terminal_process_string(char *str) {
 			float rr, tr;
 			bool ok = app_adc_rmess_ref(&rr, &tr);
 			commands_printf("Wicklungstemperatur aus dem Widerstand");
-			commands_printf("Messen: im Stand Bremse 2 s halten, dann Lichttaste. Licht blinkt 0,1 s = gemessen.");
+			commands_printf("Automatik: %s  (umschalten: Bremse >= 2 s im Stand + Schiebehilfe)",
+					app_adc_rmess_auto() ? "AN - misst bei jedem Halt" : "aus");
+			commands_printf("Jede Messung zeigt 10 s die Temperatur im Tacho.");
 			if (ok) {
 				commands_printf("Bezug: %.3f mOhm bei %.1f C", (double)(rr * 1000.0), (double)tr);
 			} else {
@@ -1349,8 +1351,7 @@ void terminal_process_string(char *str) {
 		} else {
 			int ns = app_adc_trace_seg_count();
 			int n = app_adc_trace_count();
-			commands_printf("Punkte: %d von %d   Takt: 1 s Bremse+Licht an, 10 s Display an,"
-					" 5 min Display aus",
+			commands_printf("Punkte: %d von %d   Takt: 10 s Mittelwerte, nur bei Display an",
 					n, app_adc_trace_capacity());
 			if (ns == 0) {
 				commands_printf("Noch keine Sequenz.");
@@ -1380,8 +1381,8 @@ void terminal_process_string(char *str) {
 							modus == 2 ? "Licht an" : (modus == 1 ? "Display an" : "Display aus"),
 							ganz ? "" : "   (Anfang ueberschrieben)");
 					commands_printf(" ");
-					commands_printf("   t_s  I_Mot  I_Akku    km/h   V_in  Tritt"
-							"  Moment  Soll  TFET  BSRG");
+					commands_printf("   t_s  I_eff  I_Akku    km/h   V_in  Tritt"
+							"  Moment I_max  TFET  BSRG");
 					for (uint32_t i = von; i < bis; i++) {
 						if (!app_adc_trace_get(i, &t, &imot, &iin, &kmh,
 								&vin, &prpm, &soll, &torq, &tfet, &fl)) {

@@ -199,7 +199,8 @@ static volatile float luna_walk_amps = 16.0;
 
 typedef struct {
 	uint32_t t_s;         // Sekunden seit Start des Controllers
-	int16_t  i_mot_dA;    // Motorstrom, 0,1 A
+	int16_t  i_mot_dA;    // Motorstrom, 0,1 A - seit 13.10.2026 EFFEKTIVWERT
+	                      // sqrt(Mittel I^2) im Intervall, Vorzeichen vom Mittel
 	int16_t  i_in_dA;     // Akkustrom, 0,1 A
 	uint16_t v_in_cV;     // Spannung, 0,01 V - fein, damit sich der
 	                      // Innenwiderstand daraus rechnen laesst
@@ -207,7 +208,7 @@ typedef struct {
 	                      // fuer die Temperatur, 0,5 km/h genuegt)
 	uint8_t  temp_fet;    // Endstufentemperatur in Grad, 0 = unter null
 	uint8_t  pedal_rpm;   // Trittfrequenz
-	uint8_t  soll_A;      // aktueller Sollstrom, Betrag in A
+	uint8_t  soll_A;      // seit 13.10.2026: Spitzenstrom |I_Mot| im Intervall, A
 	uint8_t  flags;       // Bit0 Bremse, 1 Schiebehilfe, 2 Reku, 3 Stoerimpuls,
 	                      // Bit4 erster Punkt einer Sequenz
 	uint8_t  torque_pct;  // ADC2 nach Abbildung, 0..100 %
@@ -288,9 +289,22 @@ static volatile bool luna_rmess_anfrage = false;
 static int luna_rmess_nachlauf_ms = 0;
 
 // Ein neuer Halt beginnt nur, wenn der Hebel losgelassen wurde.
+// (volker, 13.10.2026) AUTOMATIK, schaltbar mit Bremse (>= 2 s, Stand) +
+// Schiebehilfe-Taste. An: sofort eine Messung, danach bei jedem Halt mit
+// >= 2 s Bremse eine (hoechstens einmal je LUNA_RMESS_AUTO_ABSTAND_S).
+// Aus: keine Messung. Beim Start aus. Jede Messung zeigt 10 s die
+// Temperatur im Tacho; die Lichttaste hat damit nichts mehr zu tun.
+#define LUNA_RMESS_AUTO_ABSTAND_S  60
+static volatile bool luna_rmess_auto = false;
+static bool luna_rmess_halt_gemessen = false;
+static uint32_t luna_rmess_letzte_s = 0;
+static bool luna_rmess_walk_alt = false;
+
 static void luna_rmess_reset_halt(void) {
 	luna_rmess_halt_ms = 0;
 	luna_rmess_anfrage = false;
+	luna_rmess_halt_gemessen = false;
+	luna_rmess_walk_alt = luna_walk_assist;   // Taste ohne Bremse zaehlt nicht
 }
 
 // Aufruf bei jedem Durchlauf, solange die Bremse im Stand gezogen ist.
@@ -305,9 +319,16 @@ static void luna_rmess_im_halt(int ms_je_durchlauf) {
 		return;
 	}
 	luna_rmess_halt_ms += ms_je_durchlauf;
+	if (luna_rmess_auto && !luna_rmess_halt_gemessen &&
+			luna_rmess_halt_ms >= LUNA_RMESS_HALTEN_MS &&
+			(luna_rmess_total == 0 || luna_sek - luna_rmess_letzte_s >= LUNA_RMESS_AUTO_ABSTAND_S)) {
+		luna_rmess_anfrage = true;
+	}
 	if (!luna_rmess_anfrage) {
 		return;
 	}
+	luna_rmess_halt_gemessen = true;
+	luna_rmess_letzte_s = luna_sek;
 	luna_rmess_anfrage = false;
 	systime_t t0 = chVTGetSystemTimeX();
 	float r = 0.0;
@@ -324,7 +345,7 @@ static void luna_rmess_im_halt(int ms_je_durchlauf) {
 	luna_rmess_nachlauf_ms = LUNA_RMESS_NACHLAUF_MS;
 #ifdef HW_HAS_LUNA_SERIAL_DISPLAY
 	if (fault == 0) {
-		luna_display_serial_licht_blink();   // 0,1 s: "gemessen"
+		// (13.10.2026) kein Blinken mehr - das Licht bleibt, wie es ist.
 		// (volker, 12.10.2026) Wicklungstemperatur 10 s im Tacho: 85 C -> "85".
 		// Nur mit Bezugswert (luna_rmess kalib); im Stand eindeutig.
 		float tw = app_adc_rmess_temp(r);
@@ -343,16 +364,9 @@ static void luna_rmess_im_halt(int ms_je_durchlauf) {
 //   ohne Bremse               -> nur Licht
 static bool luna_brake;   // definiert weiter unten
 void app_adc_licht_taste(bool an) {
-	if (!luna_brake) {
-		return;
-	}
-	luna_trace_on = an;
-#ifdef HW_HAS_LUNA_SERIAL_DISPLAY
-	luna_display_serial_licht_signal(an);
-#endif
-	if (luna_rmess_halt_ms >= LUNA_RMESS_HALTEN_MS) {
-		luna_rmess_anfrage = true;
-	}
+	// (volker, 13.10.2026) Lichttaste ist nur noch Licht. Messung und
+	// Aufzeichnung haengen nicht mehr daran (Bremse + Schiebehilfe).
+	(void)an;
 }
 
 // NTC mit 10 kOhm nach 3,3 V. Laeuft mit 10 Hz aus dem Threadtakt.
@@ -608,6 +622,10 @@ int app_adc_rmess_kalib(void) {
 	luna_rmess_t_ref = st / (float)k;
 	luna_rmess_ref_ok = true;
 	return k;
+}
+
+bool app_adc_rmess_auto(void) {
+	return luna_rmess_auto;
 }
 
 float app_adc_rmess_temp(float r) {
@@ -955,46 +973,66 @@ static THD_FUNCTION(adc_thread, arg) {
 #else
 			bool display_da = true;
 #endif
-			uint8_t modus = !display_da ? LUNA_MODUS_AUS :
-					(luna_trace_on ? LUNA_MODUS_LICHT : LUNA_MODUS_DISPLAY);
-			static uint8_t modus_alt = 0xFF;
-			if (luna_seg_total == 0 || modus != modus_alt) {
-				luna_seg_open(modus);           // neue Sequenz, sofort ein Punkt
-				modus_alt = modus;
-			}
+			// (volker, 13.10.2026) Aufgezeichnet wird nur bei Display an, alle
+			// 10 s ein Punkt aus MITTELWERTEN ueber alle Durchlaeufe; der
+			// Motorstrom als Effektivwert (fuer die Waerme zaehlt I^2), dazu
+			// der Spitzenstrom. Kein 1-s-Takt und kein Takt bei Display aus mehr.
+			static float a_i = 0, a_i2 = 0, a_iin = 0, a_v = 0, a_kmh = 0,
+					a_prpm = 0, a_tq = 0, a_peak = 0;
+			static uint32_t a_n = 0;
+			static uint8_t a_f = 0;
+			static bool display_alt = false;
 			static uint32_t sek_letzte = 0;
-			uint32_t takt = (modus == LUNA_MODUS_LICHT) ? LUNA_TRACE_T_LICHT :
-					((modus == LUNA_MODUS_DISPLAY) ? LUNA_TRACE_T_DISPL : LUNA_TRACE_T_AUS);
-			if (luna_trace_mark || (luna_sek - sek_letzte) >= takt) {
+			if (!display_da) {
+				display_alt = false;
+			} else {
+				if (!display_alt || luna_seg_total == 0) {
+					luna_seg_open(LUNA_MODUS_DISPLAY);   // neue Sequenz, sofort ein Punkt
+					display_alt = true;
+					a_i = a_i2 = a_iin = a_v = a_kmh = a_prpm = a_tq = a_peak = 0;
+					a_n = 0;
+				}
+				{
+					float i = mc_interface_get_tot_current_filtered();
+					a_i += i; a_i2 += i * i;
+					if (fabsf(i) > a_peak) { a_peak = fabsf(i); }
+					a_iin += mc_interface_get_tot_current_in_filtered();
+					a_v += mc_interface_get_input_voltage_filtered();
+					a_kmh += mc_interface_get_speed() * 3.6;
+					a_prpm += app_pas_get_pedal_rpm();
+					a_tq += app_adc_get_decoded_level2() * 100.0;
+					a_n++;
+#ifdef HW_HAS_BRAKE_SENSOR
+					if (luna_brake) { a_f |= 1; }
+#endif
+					if (luna_walk_assist) { a_f |= 2; }
+					if (luna_regen_ramp > 0.1) { a_f |= 4; }
+				}
+			}
+			if (display_da && (luna_trace_mark || (luna_sek - sek_letzte) >= LUNA_TRACE_T_DISPL)) {
 				sek_letzte = luna_sek;
 				{
+					float n = a_n > 0 ? (float)a_n : 1.0;
 					luna_trace_t *e = &luna_trace_buf[luna_trace_total % LUNA_TRACE_N];
 					e->t_s = luna_sek;
-					e->i_mot_dA = (int16_t)(mc_interface_get_tot_current_filtered() * 10.0);
-					e->i_in_dA = (int16_t)(mc_interface_get_tot_current_in_filtered() * 10.0);
-					e->v_in_cV = (uint16_t)(mc_interface_get_input_voltage_filtered() * 100.0);
-					float kmh2 = mc_interface_get_speed() * 3.6 * 2.0;
+					float ieff = sqrtf(a_i2 / n);
+					if (a_i < 0.0) { ieff = -ieff; }
+					e->i_mot_dA = (int16_t)(ieff * 10.0);
+					e->i_in_dA = (int16_t)(a_iin / n * 10.0);
+					e->v_in_cV = (uint16_t)((a_n > 0 ? a_v / n : mc_interface_get_input_voltage_filtered()) * 100.0);
+					float kmh2 = a_kmh / n * 2.0;
 					e->kmh_2 = (uint8_t)(kmh2 < 0.0 ? 0.0 : (kmh2 > 255.0 ? 255.0 : kmh2));
 					float tf = mc_interface_temp_fet_filtered();
 					e->temp_fet = (uint8_t)(tf < 0.0 ? 0.0 : (tf > 255.0 ? 255.0 : tf));
-					float prpm = app_pas_get_pedal_rpm();
+					float prpm = a_prpm / n;
 					e->pedal_rpm = (uint8_t)(prpm < 0.0 ? 0.0 : (prpm > 255.0 ? 255.0 : prpm));
-					float soll = fabsf(luna_soll_A);
-					e->soll_A = (uint8_t)(soll > 255.0 ? 255.0 : soll);
-					float tq = app_adc_get_decoded_level2() * 100.0;
+					e->soll_A = (uint8_t)(a_peak > 255.0 ? 255.0 : a_peak);
+					float tq = a_tq / n;
 					e->torque_pct = (uint8_t)(tq < 0.0 ? 0.0 : (tq > 100.0 ? 100.0 : tq));
-					uint8_t f = 0;
-#ifdef HW_HAS_BRAKE_SENSOR
-					if (luna_brake) {
-						f |= 1;
-					}
-#endif
-					if (luna_walk_assist) {
-						f |= 2;
-					}
-					if (luna_regen_ramp > 0.1) {
-						f |= 4;
-					}
+					uint8_t f = a_f;
+					a_i = a_i2 = a_iin = a_v = a_kmh = a_prpm = a_tq = a_peak = 0;
+					a_n = 0;
+					a_f = 0;
 					if (luna_brake_glitch_seit_abtastung) {
 						f |= 8;
 						luna_brake_glitch_seit_abtastung = false;
@@ -1382,6 +1420,16 @@ static THD_FUNCTION(adc_thread, arg) {
 				luna_app_treibt = false;
 				timeout_reset();
 				pwr_ramp = 0.0;
+				// Bremse >= 2 s im Stand + Schiebehilfe: Automatik umschalten.
+				// Gemessen wird erst nach dem Loslassen der Taste.
+				if (luna_walk_assist && !luna_rmess_walk_alt &&
+						luna_rmess_halt_ms >= LUNA_RMESS_HALTEN_MS) {
+					luna_rmess_auto = !luna_rmess_auto;
+					if (luna_rmess_auto) {
+						luna_rmess_anfrage = true;
+					}
+				}
+				luna_rmess_walk_alt = luna_walk_assist;
 				if (!luna_walk_assist) {
 					luna_rmess_im_halt(1000 / config.update_rate_hz);
 				}

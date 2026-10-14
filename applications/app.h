@@ -75,6 +75,7 @@ bool app_adc_rmess_get(int i, uint32_t *t_s, float *r, float *t_fet, float *v_in
 bool app_adc_rmess_ref(float *r_ref, float *t_ref);
 int app_adc_rmess_kalib(void);
 float app_adc_rmess_temp(float r);
+bool app_adc_rmess_auto(void);
 void app_adc_akku_temp(float *t, bool *ok, float *faktor, bool *eingebaut);
 void app_adc_volt_stats(float *v_min, float *i_min, float *v_max, float *i_max);
 void app_adc_brake_release_stats(uint32_t *letzte_ms, uint32_t *max_ms,
