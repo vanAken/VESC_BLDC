@@ -1351,7 +1351,7 @@ void terminal_process_string(char *str) {
 		} else {
 			int ns = app_adc_trace_seg_count();
 			int n = app_adc_trace_count();
-			commands_printf("Punkte: %d von %d   Takt: 10 s Mittelwerte, nur bei Display an",
+			commands_printf("Punkte: %d von %d   Takt: 10 s Mittelwerte (Display an), aus: 20 s / nach 10 min 5 min",
 					n, app_adc_trace_capacity());
 			if (ns == 0) {
 				commands_printf("Noch keine Sequenz.");
@@ -1389,7 +1389,7 @@ void terminal_process_string(char *str) {
 							break;
 						}
 						commands_printf("%6.0f %6.1f %7.1f %7.1f %6.2f %6.0f"
-								" %6.0f%% %5.0f %5.0f  %c%c%c%c",
+								" %6.0f%% %5.0f %5.1f  %c%c%c%c",
 								(double)(t - t0), (double)imot, (double)iin,
 								(double)kmh, (double)vin, (double)prpm,
 								(double)torq, (double)soll, (double)tfet,

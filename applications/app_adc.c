@@ -115,6 +115,17 @@ static void luna_freigeben(void) {
 #define LUNA_AKKU_T_NULL        2.0f      // Grad, ab hier keine Reku
 // Schiebehilfe: fester Motorstrom bis zur Tempogrenze.
 static volatile bool luna_walk_assist = false;
+// (volker, 16.10.2026) SICHERHEIT: Schiebehilfe-Taste mit gezogener Bremse
+// (Temperatur-Geste) darf beim Loslassen der Bremse NICHT losschieben -
+// genau das passierte auf der Tour. Wird die Taste bei gezogener Bremse
+// gedrueckt, ist die Schiebehilfe gesperrt, bis die Taste losgelassen ist
+// UND mindestens 2 s vergangen sind. Erst ein neuer Druck schiebt.
+static bool luna_walk_sperre = false;
+static systime_t luna_walk_sperre_bis = 0;
+#define LUNA_WALK_SPERRE_MS  2000
+static inline bool luna_walk_ok(void) {
+	return luna_walk_assist && !luna_walk_sperre;
+}
 // Schiebehilfe: absoluter Motorstrom, aus der Displaystufe gesetzt.
 // Tabelle in luna_display_serial.c: 16 A bei ausgeschaltetem Antrieb,
 // dann in Vierer-Schritten bis 36 A. Der Startwert gilt, bis das Display
@@ -192,7 +203,7 @@ static volatile float luna_walk_amps = 16.0;
 #define LUNA_TRACE_SEG_N    64      // Sequenzen (04.10.: 32 liefen in der Pause ueber)
 #define LUNA_TRACE_T_LICHT  1       // s, Licht an
 #define LUNA_TRACE_T_DISPL  10      // s, Display an, Licht aus (2048 Pkt = 5,7 h)
-#define LUNA_TRACE_T_AUS    300     // s, Display aus
+#define LUNA_TRACE_T_AUS    300     // s, Display aus nach den ersten 10 min (davor 20 s)
 #define LUNA_MODUS_AUS      0
 #define LUNA_MODUS_DISPLAY  1
 #define LUNA_MODUS_LICHT    2
@@ -724,7 +735,7 @@ bool app_adc_trace_get(uint32_t abs, float *t, float *imot,
 	*torq = (float)e->torque_pct;
 	*flags = e->flags;
 	*kmh = (float)e->kmh_2 / 2.0;
-	*tfet = (float)e->temp_fet;
+	*tfet = (float)e->temp_fet + (float)((e->flags >> 5) & 7) / 8.0;
 	return true;
 }
 
@@ -950,6 +961,15 @@ static THD_FUNCTION(adc_thread, arg) {
 			}
 		}
 
+		// Sperre der Schiebehilfe loesen: Taste los UND Frist abgelaufen.
+		if (luna_walk_sperre) {
+			if (luna_walk_assist) {
+				luna_walk_sperre_bis = chVTGetSystemTimeX() + MS2ST(LUNA_WALK_SPERRE_MS);
+			} else if ((int32_t)(chVTGetSystemTimeX() - luna_walk_sperre_bis) >= 0) {
+				luna_walk_sperre = false;
+			}
+		}
+
 		// --- Verlaufsaufzeichnung ---------------------------------------
 		// Hier oben, damit sie in jedem Zweig laeuft - der Bremszweig
 		// weiter unten springt per continue und wuerde sonst fehlen.
@@ -969,7 +989,12 @@ static THD_FUNCTION(adc_thread, arg) {
 			}
 
 #ifdef HW_HAS_LUNA_SERIAL_DISPLAY
-			bool display_da = luna_display_serial_connected();
+			// (16.10.2026) Ein ausgeschaltetes Display meldet sich etwa alle 7 min
+			// kurz (Tour 14.10.). Erst nach 5 s Verbindung als "an" zaehlen.
+			static uint32_t da_seit = 0;
+			bool da_roh = luna_display_serial_connected();
+			if (!da_roh) { da_seit = luna_sek; }
+			bool display_da = da_roh && (luna_sek - da_seit) >= 5;
 #else
 			bool display_da = true;
 #endif
@@ -983,9 +1008,21 @@ static THD_FUNCTION(adc_thread, arg) {
 			static uint8_t a_f = 0;
 			static bool display_alt = false;
 			static uint32_t sek_letzte = 0;
+			// (16.10.2026) Display aus: weiter loggen fuer die Abkuehlkurve der
+			// Endstufe (Lufttemperatur), erst 10 min alle 20 s, dann alle 5 min.
+			static uint32_t aus_seit = 0;
+			static bool aus_alt = false;
 			if (!display_da) {
 				display_alt = false;
+				if (!aus_alt) {
+					luna_seg_open(LUNA_MODUS_AUS);
+					aus_alt = true;
+					aus_seit = luna_sek;
+					a_i = a_i2 = a_iin = a_v = a_kmh = a_prpm = a_tq = a_peak = 0;
+					a_n = 0;
+				}
 			} else {
+				aus_alt = false;
 				if (!display_alt || luna_seg_total == 0) {
 					luna_seg_open(LUNA_MODUS_DISPLAY);   // neue Sequenz, sofort ein Punkt
 					display_alt = true;
@@ -1009,7 +1046,9 @@ static THD_FUNCTION(adc_thread, arg) {
 					if (luna_regen_ramp > 0.1) { a_f |= 4; }
 				}
 			}
-			if (display_da && (luna_trace_mark || (luna_sek - sek_letzte) >= LUNA_TRACE_T_DISPL)) {
+			uint32_t takt = display_da ? LUNA_TRACE_T_DISPL :
+					((luna_sek - aus_seit) < 600 ? 20 : LUNA_TRACE_T_AUS);
+			if (luna_trace_mark || (luna_sek - sek_letzte) >= takt) {
 				sek_letzte = luna_sek;
 				{
 					float n = a_n > 0 ? (float)a_n : 1.0;
@@ -1023,13 +1062,17 @@ static THD_FUNCTION(adc_thread, arg) {
 					float kmh2 = a_kmh / n * 2.0;
 					e->kmh_2 = (uint8_t)(kmh2 < 0.0 ? 0.0 : (kmh2 > 255.0 ? 255.0 : kmh2));
 					float tf = mc_interface_temp_fet_filtered();
-					e->temp_fet = (uint8_t)(tf < 0.0 ? 0.0 : (tf > 255.0 ? 255.0 : tf));
+					// (16.10.2026) Endstufe auf 1/8 Grad: ganze Grad hier, Achtel in
+					// flags Bit 5..7 (fuer die Schaetzung der Lufttemperatur).
+					utils_truncate_number(&tf, 0.0, 255.875);
+					e->temp_fet = (uint8_t)tf;
+					uint8_t achtel = (uint8_t)((tf - (float)e->temp_fet) * 8.0) & 7;
 					float prpm = a_prpm / n;
 					e->pedal_rpm = (uint8_t)(prpm < 0.0 ? 0.0 : (prpm > 255.0 ? 255.0 : prpm));
 					e->soll_A = (uint8_t)(a_peak > 255.0 ? 255.0 : a_peak);
 					float tq = a_tq / n;
 					e->torque_pct = (uint8_t)(tq < 0.0 ? 0.0 : (tq > 100.0 ? 100.0 : tq));
-					uint8_t f = a_f;
+					uint8_t f = (a_f & 0x1F) | (uint8_t)(achtel << 5);
 					a_i = a_i2 = a_iin = a_v = a_kmh = a_prpm = a_tq = a_peak = 0;
 					a_n = 0;
 					a_f = 0;
@@ -1422,6 +1465,10 @@ static THD_FUNCTION(adc_thread, arg) {
 				pwr_ramp = 0.0;
 				// Bremse >= 2 s im Stand + Schiebehilfe: Automatik umschalten.
 				// Gemessen wird erst nach dem Loslassen der Taste.
+				if (luna_walk_assist) {
+					luna_walk_sperre = true;
+					luna_walk_sperre_bis = chVTGetSystemTimeX() + MS2ST(LUNA_WALK_SPERRE_MS);
+				}
 				if (luna_walk_assist && !luna_rmess_walk_alt &&
 						luna_rmess_halt_ms >= LUNA_RMESS_HALTEN_MS) {
 					luna_rmess_auto = !luna_rmess_auto;
@@ -1701,7 +1748,7 @@ static THD_FUNCTION(adc_thread, arg) {
 					// Volle Kraft bis LUNA_WALK_ERPM_FULL, dann linear auf
 					// null bei LUNA_WALK_ERPM_ZERO.
 					float walk_amps = 0.0;
-					if (luna_walk_assist) {
+					if (luna_walk_ok()) {
 						float erpm = fabsf(rpm_local);
 						walk_amps = luna_walk_amps;
 						if (erpm > LUNA_WALK_ERPM_FULL) {
@@ -1751,7 +1798,7 @@ static THD_FUNCTION(adc_thread, arg) {
 					// Schiebehilfe gedrueckt ist oder das Rad ohnehin schon
 					// rollt. Was auch immer den Stoss ausgeloest hat, kommt
 					// damit nicht mehr durch.
-					if (!luna_walk_assist
+					if (!luna_walk_ok()
 							&& app_pas_get_pedal_rpm() < 1.0
 							&& fabsf(rpm_local) < LUNA_STANDSTILL_ERPM) {
 						luna_block_count++;
