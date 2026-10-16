@@ -17,9 +17,20 @@ Grundlage.
   Akkustrom höchstens 10 A
 - Anfahrsperre: Antrieb nur beim Treten, Schieben oder rollendem Rad
 - Stufentabellen relativ zum eingestellten Motorstrom (Bezug 60 A)
-- Wicklungstemperatur über den Widerstand (`luna_rmess`): im Stand Bremse 2 s halten, dann Lichttaste – der Tacho zeigt 10 s lang die Temperatur in °C (0–98, braucht einmal `luna_rmess kalib` bei kaltem Motor)
-- Aufzeichnung im RAM, 2048 Punkte (`luna_trace`), 10-s-Takt = 5,7 h Fahrt.
-  Weg, wenn der Akku ab ist. Dafür sind CAN und LispBM entfernt.
+- Wicklungstemperatur über den Widerstand (`luna_rmess`): im Stand Bremse
+  ≥ 2 s halten + Schiebehilfe-Taste schaltet die Messung an/aus. Ist sie an,
+  misst der Controller bei jedem Halt mit ≥ 2 s Bremse (höchstens einmal je
+  Minute), und der Tacho zeigt 10 s die Temperatur in °C (0–98). Braucht
+  einmal `luna_rmess kalib` bei kaltem Motor.
+- **Sicherheit:** Wird die Schiebehilfe bei gezogener Bremse gedrückt, ist
+  sie gesperrt, bis die Taste losgelassen ist und 2 s vergangen sind. Das
+  Loslassen der Bremse startet nie den Motor.
+- Die Lichttaste schaltet nur das Licht.
+- Aufzeichnung im RAM, 2048 Punkte (`luna_trace`): bei Display an alle 10 s
+  Mittelwerte (Motorstrom als Effektivwert und Spitze, Akkustrom, Tempo,
+  Spannung, Trittfrequenz, Pedalkraft, Endstufe auf 1/8 °C) = 5,7 h Fahrt;
+  bei Display aus 10 min alle 20 s, danach alle 5 min. Weg, wenn der Akku
+  ab ist. Dafür sind CAN und LispBM entfernt.
 
 ## Inbetriebnahme
 1. Bauen: `make 75_100_V2` – oder die fertige `.bin` aus den Releases nehmen
